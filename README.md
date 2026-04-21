@@ -80,7 +80,7 @@ make run                # go run ./cmd/lctl
 | `x`      | Stop (SIGTERM)                      |
 | `r`      | Restart (stop + kickstart)          |
 | `tab`    | Toggle enable/disable               |
-| `D`      | Delete agent + plist                |
+| `D`      | Delete agent + plist (`y`/`enter` to confirm, any other key cancels) |
 | `/`      | Filter by label / state / schedule  |
 | `ctrl+r` | Refresh list                        |
 | `q`      | Quit (`ctrl+c` always quits too)    |

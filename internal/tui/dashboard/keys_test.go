@@ -185,6 +185,80 @@ func TestKeyRefresh(t *testing.T) {
 	}
 }
 
+func TestDeleteArmsConfirmBeforeOp(t *testing.T) {
+	ops := &recordingOps{}
+	m := loadedModel(t, ops)
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	if cmd != nil {
+		t.Errorf("arming delete should not dispatch a command, got %T", cmd())
+	}
+	if m.pendingDelete == "" {
+		t.Error("expected pendingDelete to be set after D")
+	}
+	if len(ops.calls) != 0 {
+		t.Errorf("delete must not fire before confirm, got %v", ops.calls)
+	}
+	if !strings.Contains(m.View(), "delete") || !strings.Contains(m.View(), "(y/N)") {
+		t.Errorf("view should prompt for y/N:\n%s", m.View())
+	}
+}
+
+func TestDeleteConfirmYRunsOp(t *testing.T) {
+	ops := &recordingOps{}
+	m := loadedModel(t, ops)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd == nil {
+		t.Fatal("expected delete command after y")
+	}
+	_ = cmd()
+	if m.pendingDelete != "" {
+		t.Errorf("pendingDelete should clear on confirm, got %q", m.pendingDelete)
+	}
+	if len(ops.calls) != 1 || !strings.HasPrefix(ops.calls[0], "delete ") {
+		t.Errorf("expected delete call, got %v", ops.calls)
+	}
+}
+
+func TestDeleteConfirmCancels(t *testing.T) {
+	ops := &recordingOps{}
+	m := loadedModel(t, ops)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	// Any non-affirmative key cancels. Use "n" as the canonical choice.
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	if cmd != nil {
+		t.Errorf("cancel should not dispatch a command, got %T", cmd())
+	}
+	if m.pendingDelete != "" {
+		t.Errorf("pendingDelete should clear on cancel, got %q", m.pendingDelete)
+	}
+	if len(ops.calls) != 0 {
+		t.Errorf("cancel must not fire delete, got %v", ops.calls)
+	}
+	if !strings.Contains(m.opStatus, "cancelled") {
+		t.Errorf("expected 'cancelled' in status, got %q", m.opStatus)
+	}
+}
+
+func TestDeleteConfirmBlocksOtherOps(t *testing.T) {
+	ops := &recordingOps{}
+	m := loadedModel(t, ops)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	// While prompt is armed, "s" should cancel the prompt without
+	// starting the job — the start path is gated behind confirmation
+	// resolution.
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	if cmd != nil {
+		_ = cmd()
+	}
+	if len(ops.calls) != 0 {
+		t.Errorf("start must not fire while delete prompt is armed, got %v", ops.calls)
+	}
+	if m.pendingDelete != "" {
+		t.Errorf("pendingDelete should clear after any key, got %q", m.pendingDelete)
+	}
+}
+
 func TestEnterWithNoSelectionDoesNothing(t *testing.T) {
 	m := New(stubLoader{}, nil, nil, Settings{})
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

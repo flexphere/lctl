@@ -71,9 +71,14 @@ type Model struct {
 	issues   []error
 	loadErr  error
 	opStatus string
-	loaded   bool
-	width    int
-	height   int
+	// pendingDelete holds the label waiting for y/N confirmation after
+	// the user pressed the delete key. Empty means no prompt is active.
+	// We keep the raw label so the prompt can render the stripped form
+	// while the eventual op still gets the lctl-prefixed name.
+	pendingDelete string
+	loaded        bool
+	width         int
+	height        int
 }
 
 // New builds a Dashboard model backed by bubbles/list, with the fzf-
@@ -237,6 +242,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if key == "ctrl+c" || key == m.keys.Quit {
 		return m, tea.Quit
 	}
+	// While a delete confirmation is armed, every keystroke resolves
+	// the prompt (y/enter = go ahead; anything else = cancel). We
+	// consume the key either way so list navigation or other ops can't
+	// fire behind the modal.
+	if m.pendingDelete != "" {
+		return m.resolveDeleteConfirm(key)
+	}
 	switch key {
 	case m.keys.Refresh:
 		m.opStatus = ""
@@ -258,12 +270,51 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case m.keys.Toggle:
 		return m.toggleEnabled()
 	case m.keys.Delete:
-		return m.runOp("delete", deleteOp)
+		return m.armDeleteConfirm()
 	}
 	// Everything else (arrow keys, /, PgUp etc.) is list's responsibility.
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	return m, cmd
+}
+
+// armDeleteConfirm stores the selected label so the next keystroke can
+// resolve the confirmation prompt. Returning without a command keeps
+// the screen idle until the user answers.
+func (m Model) armDeleteConfirm() (Model, tea.Cmd) {
+	label := m.SelectedLabel()
+	if label == "" {
+		return m, nil
+	}
+	m.pendingDelete = label
+	m.opStatus = ""
+	return m, nil
+}
+
+// resolveDeleteConfirm consumes the next key while a delete prompt is
+// armed: "y"/"Y"/"enter" runs the delete, anything else cancels. The
+// pending label is cleared before dispatch either way so a second
+// confirmation is never left dangling.
+func (m Model) resolveDeleteConfirm(key string) (Model, tea.Cmd) {
+	label := m.pendingDelete
+	m.pendingDelete = ""
+	switch key {
+	case "y", "Y", "enter":
+		m.opStatus = fmt.Sprintf("delete %s ...", plist.StripLctlPrefix(label))
+		if m.ops == nil {
+			m.opStatus = "delete: ops not configured"
+			return m, nil
+		}
+		ops := m.ops
+		return m, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+			defer cancel()
+			return OpCompletedMsg{Op: "delete", Label: label, Err: ops.Delete(ctx, label)}
+		}
+	default:
+		m.opStatus = "delete cancelled"
+		return m, nil
+	}
 }
 
 type opFn func(ctx context.Context, ops service.Ops, label string) error
@@ -273,7 +324,6 @@ func stopOp(ctx context.Context, o service.Ops, l string) error    { return o.St
 func restartOp(ctx context.Context, o service.Ops, l string) error { return o.Restart(ctx, l) }
 func enableOp(ctx context.Context, o service.Ops, l string) error  { return o.Enable(ctx, l) }
 func disableOp(ctx context.Context, o service.Ops, l string) error { return o.Disable(ctx, l) }
-func deleteOp(ctx context.Context, o service.Ops, l string) error  { return o.Delete(ctx, l) }
 
 func (m Model) runOp(name string, fn opFn) (Model, tea.Cmd) {
 	label := m.SelectedLabel()
@@ -417,6 +467,10 @@ func (m Model) View() string {
 	}
 	if m.opStatus != "" {
 		footer = append(footer, common.HelpStyle.Render(m.opStatus))
+	}
+	if m.pendingDelete != "" {
+		footer = append(footer, common.StatusErrored.Render(
+			fmt.Sprintf("delete %s? (y/N)", plist.StripLctlPrefix(m.pendingDelete))))
 	}
 	footer = append(footer, common.HelpStyle.Render(m.helpLine()))
 	parts := make([]string, 0, 7)
